@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import {
   AddUsersDto,
+  AlbumLockDto,
   AlbumResponseDto,
   AlbumsAddAssetsDto,
   AlbumsAddAssetsResponseDto,
@@ -14,7 +15,7 @@ import {
 import { BulkIdErrorReason, BulkIdResponseDto, BulkIdsDto } from 'src/dtos/asset-ids.response.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
 import { MapMarkerResponseDto } from 'src/dtos/map.dto';
-import { AlbumUserRole, Permission } from 'src/enum';
+import { AlbumUserRole, AssetVisibility, Permission } from 'src/enum';
 import { AlbumAssetCount, AlbumInfoOptions } from 'src/repositories/album.repository';
 import { BaseService } from 'src/services/base.service';
 import { addAssets, removeAssets } from 'src/utils/asset.util';
@@ -37,7 +38,8 @@ export class AlbumService extends BaseService {
     };
   }
 
-  async getAll({ user: { id: ownerId } }: AuthDto, { assetId, ...rest }: GetAlbumsDto): Promise<AlbumResponseDto[]> {
+  async getAll(auth: AuthDto, { assetId, ...rest }: GetAlbumsDto): Promise<AlbumResponseDto[]> {
+    const ownerId = auth.user.id;
     await this.albumRepository.updateThumbnails();
 
     const albums = assetId
@@ -48,9 +50,17 @@ export class AlbumService extends BaseService {
       return [];
     }
 
+    // PIN elevation is session-wide, not per-album: once elevated, the requester already has
+    // standing access to open any of their locked albums with no extra friction. So it's safe
+    // to also reveal locked albums' real counts here rather than showing a stale 0.
+    const includeLockedAlbumAssets = !!auth.session?.hasElevatedPermission;
+
     // Get asset count for each album. Then map the result to an object:
     // { [albumId]: assetCount }
-    const results = await this.albumRepository.getMetadataForIds(albums.map((album) => album.id));
+    const results = await this.albumRepository.getMetadataForIds(
+      albums.map((album) => album.id),
+      includeLockedAlbumAssets,
+    );
     const albumMetadata: Record<string, AlbumAssetCount> = {};
     for (const metadata of results) {
       albumMetadata[metadata.albumId] = metadata;
@@ -71,7 +81,10 @@ export class AlbumService extends BaseService {
     await this.requireAccess({ auth, permission: Permission.AlbumRead, ids: [id] });
     await this.albumRepository.updateThumbnails();
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
-    const [albumMetadataForIds] = await this.albumRepository.getMetadataForIds([album.id]);
+    // requireAccess(AlbumRead) above already denies access to a locked album unless the
+    // requester is elevated, so it's safe to include this album's Locked assets in its own
+    // count/date-range metadata here.
+    const [albumMetadataForIds] = await this.albumRepository.getMetadataForIds([album.id], true);
 
     const hasSharedUsers = album.albumUsers && album.albumUsers.length > 1;
     const hasSharedLink = album.sharedLinks && album.sharedLinks.length > 0;
@@ -168,6 +181,66 @@ export class AlbumService extends BaseService {
     await this.albumRepository.delete(id);
   }
 
+  /**
+   * Lock or unlock an album. Only the owner can toggle this.
+   *
+   * Matches the single-asset "locked folder" feature's security model exactly: locking is always
+   * allowed with just a confirmation, no PIN required (you're only making something MORE hidden).
+   * Unlocking an already-locked album, however, does require the owner's own elevated (PIN-
+   * verified) session -- enforced not by an explicit check here, but structurally, the same way
+   * AssetAccess.checkOwnerAccess already protects single assets: checkOwnerAccess (via the
+   * AlbumLock permission below) excludes already-locked albums from non-elevated access entirely,
+   * so a non-elevated attempt to unlock never even passes the access check.
+   *
+   * Locking cascades to every asset currently in the album: each asset's visibility is set
+   * to `Locked` (hiding it from the timeline, map, search, and any other album it belongs to,
+   * via the same mechanism the single-asset "locked folder" feature already uses) and the
+   * asset is evicted from every album except this one.
+   *
+   * Note: eviction from other albums is not reversible. Unlocking restores each asset's
+   * visibility, but does not re-add it to albums it was evicted from while locked -- this
+   * matches the existing behavior/expectations of the single-asset locked-folder feature.
+   */
+  async setLocked(auth: AuthDto, id: string, dto: AlbumLockDto): Promise<AlbumResponseDto> {
+    await this.requireAccess({ auth, permission: Permission.AlbumLock, ids: [id] });
+
+    const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
+
+    // mapAlbum() derives assetCount/startDate/endDate purely from an `assets` array, which we
+    // never fetch here (withAssets: false, for cost) -- so always compute those fields from
+    // getMetadataForIds() instead, the same way get() does, rather than leaving them at
+    // mapAlbum's default of 0/undefined. This also has to happen AFTER the visibility mutation
+    // below for the unlock case: fetching before would still exclude the (still-Locked, at that
+    // point) assets from the default-visibility metadata query.
+    const withMetadata = async (mappedAlbum: ReturnType<typeof mapAlbum>): Promise<AlbumResponseDto> => {
+      const [metadata] = await this.albumRepository.getMetadataForIds([id], true);
+      return {
+        ...mappedAlbum,
+        startDate: asDateTimeString(metadata?.startDate ?? undefined),
+        endDate: asDateTimeString(metadata?.endDate ?? undefined),
+        assetCount: metadata?.assetCount ?? 0,
+        lastModifiedAssetTimestamp: asDateTimeString(metadata?.lastModifiedAssetTimestamp ?? undefined),
+      };
+    };
+
+    if (dto.isLocked === album.isLocked) {
+      return withMetadata(mapAlbum(album));
+    }
+
+    const assetIds = await this.albumRepository.getAllAssetIds(id);
+    if (assetIds.length > 0) {
+      if (dto.isLocked) {
+        await this.assetRepository.updateAll(assetIds, { visibility: AssetVisibility.Locked });
+        await this.albumRepository.removeAssetsFromAllExcept(id, assetIds);
+      } else {
+        await this.assetRepository.updateAll(assetIds, { visibility: AssetVisibility.Timeline });
+      }
+    }
+
+    const updatedAlbum = await this.albumRepository.update(id, { id, isLocked: dto.isLocked }, auth.user.id);
+    return withMetadata(mapAlbum(updatedAlbum));
+  }
+
   async addAssets(auth: AuthDto, id: string, dto: BulkIdsDto): Promise<BulkIdResponseDto[]> {
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     await this.requireAccess({ auth, permission: Permission.AlbumAssetCreate, ids: [id] });
@@ -177,6 +250,17 @@ export class AlbumService extends BaseService {
       { access: this.accessRepository, bulk: this.albumRepository },
       { parentId: id, assetIds: dto.ids },
     );
+
+    const newAssetIds = results.filter(({ success }) => success).map(({ id: assetId }) => assetId);
+
+    if (album.isLocked && newAssetIds.length > 0) {
+      // Mirrors setLocked(): a locked album's assets only ever live there -- so anything newly
+      // added to an already-locked album needs the same visibility flip and the same exclusivity
+      // (pulled out of every other album it was in), not just the assets that were present at the
+      // moment the album was originally locked.
+      await this.assetRepository.updateAll(newAssetIds, { visibility: AssetVisibility.Locked });
+      await this.albumRepository.removeAssetsFromAllExcept(id, newAssetIds);
+    }
 
     const { id: firstNewAssetId } = results.find(({ success }) => success) || {};
     if (firstNewAssetId) {
@@ -222,8 +306,18 @@ export class AlbumService extends BaseService {
       return results;
     }
 
+    // An asset can only ever belong to one locked album at a time (locking keeps membership
+    // exclusive) -- so a single add-to-albums call can target any number of unlocked albums
+    // together, or exactly one locked album alone, but never 2+ locked albums or a locked+unlocked
+    // mix. Mirrors the client-side check in the album picker, enforced here too for any caller.
+    const lockedTargetAlbumIds = await this.albumRepository.getLockedAlbumIds([...allowedAlbumIds]);
+    if (lockedTargetAlbumIds.size > 1 || (lockedTargetAlbumIds.size === 1 && allowedAlbumIds.size > 1)) {
+      throw new BadRequestException('Assets can only be added to one locked album at a time');
+    }
+
     const albumAssetValues: { albumId: string; assetId: string }[] = [];
     const events: { id: string; recipients: string[] }[] = [];
+    const lockedAlbumAdditions: { albumId: string; assetIds: string[] }[] = [];
     for (const albumId of allowedAlbumIds) {
       const existingAssetIds = await this.albumRepository.getAssetIds(albumId, [...allowedAssetIds]);
       const notPresentAssetIds = [...allowedAssetIds].filter((id) => !existingAssetIds.has(id));
@@ -236,6 +330,9 @@ export class AlbumService extends BaseService {
 
       for (const assetId of notPresentAssetIds) {
         albumAssetValues.push({ albumId, assetId });
+      }
+      if (album.isLocked) {
+        lockedAlbumAdditions.push({ albumId, assetIds: notPresentAssetIds });
       }
       await this.albumRepository.update(
         albumId,
@@ -251,6 +348,15 @@ export class AlbumService extends BaseService {
     }
 
     await this.albumRepository.addAssetIdsToAlbums(albumAssetValues);
+
+    // Same exclusivity/visibility rule as the single-album addAssets() above -- assets newly added
+    // to an already-locked album need to end up Locked and pulled out of every other album, not
+    // just left with whatever visibility they had before.
+    for (const { albumId, assetIds } of lockedAlbumAdditions) {
+      await this.assetRepository.updateAll(assetIds, { visibility: AssetVisibility.Locked });
+      await this.albumRepository.removeAssetsFromAllExcept(albumId, assetIds);
+    }
+
     for (const event of events) {
       for (const recipientId of event.recipients) {
         await this.eventRepository.emit('AlbumUpdate', { id: event.id, recipientId });

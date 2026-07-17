@@ -461,6 +461,148 @@ describe(AlbumService.name, () => {
     });
   });
 
+  describe('setLocked', () => {
+    it('should lock a still-unlocked album without requiring an elevated (PIN-verified) session', async () => {
+      // Matches the single-asset locked-folder feature: locking never needs a PIN, since it only
+      // ever makes something MORE hidden. checkOwnerAccess (mocked here) is what would actually
+      // enforce this in a real DB -- it only excludes ALREADY-locked albums from non-elevated
+      // access, so a still-unlocked album passes regardless of elevation.
+      const album = AlbumFactory.create({ isLocked: false });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getAllAssetIds.mockResolvedValue([]);
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, isLocked: true }));
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+
+      // AuthFactory.create() has no session, i.e. not elevated.
+      await sut.setLocked(AuthFactory.create(owner), album.id, { isLocked: true });
+
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, { id: album.id, isLocked: true }, owner.id);
+    });
+
+    it('should reject unlocking an already-locked album without an elevated session', async () => {
+      // A non-elevated session attempting to unlock a currently-locked album should never even
+      // pass the access check -- checkOwnerAccess excludes already-locked albums from non-elevated
+      // access entirely, so this simulates that by returning an empty set, same as a real DB query
+      // would for this exact scenario.
+      const album = AlbumFactory.create({ isLocked: true });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+
+      await expect(
+        sut.setLocked(AuthFactory.create(owner), album.id, { isLocked: false }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should require permissions', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      await expect(sut.setLocked(auth, album.id, { isLocked: true })).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should not let a shared user (editor) lock the album', async () => {
+      const album = AlbumFactory.create();
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set());
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      await expect(sut.setLocked(auth, album.id, { isLocked: true })).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should no-op if the album is already in the requested lock state', async () => {
+      const album = AlbumFactory.create({ isLocked: true });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      await sut.setLocked(auth, album.id, { isLocked: true });
+
+      expect(mocks.album.getAllAssetIds).not.toHaveBeenCalled();
+      expect(mocks.asset.updateAll).not.toHaveBeenCalled();
+      expect(mocks.album.update).not.toHaveBeenCalled();
+    });
+
+    it('should lock the album, hide its assets everywhere else, and set every asset to Locked visibility', async () => {
+      const album = AlbumFactory.create({ isLocked: false });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getAllAssetIds.mockResolvedValue(['asset-1', 'asset-2']);
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, isLocked: true }));
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      await sut.setLocked(auth, album.id, { isLocked: true });
+
+      expect(mocks.asset.updateAll).toHaveBeenCalledWith(['asset-1', 'asset-2'], { visibility: 'locked' });
+      expect(mocks.album.removeAssetsFromAllExcept).toHaveBeenCalledWith(album.id, ['asset-1', 'asset-2']);
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, { id: album.id, isLocked: true }, owner.id);
+    });
+
+    it('should unlock the album and restore asset visibility to Timeline', async () => {
+      const album = AlbumFactory.create({ isLocked: true });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getAllAssetIds.mockResolvedValue(['asset-1']);
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, isLocked: false }));
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      await sut.setLocked(auth, album.id, { isLocked: false });
+
+      expect(mocks.asset.updateAll).toHaveBeenCalledWith(['asset-1'], { visibility: 'timeline' });
+      expect(mocks.album.removeAssetsFromAllExcept).not.toHaveBeenCalled();
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, { id: album.id, isLocked: false }, owner.id);
+    });
+
+    it('should not touch assets when the album has none', async () => {
+      const album = AlbumFactory.create({ isLocked: false });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getAllAssetIds.mockResolvedValue([]);
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, isLocked: true }));
+      mocks.album.getMetadataForIds.mockResolvedValue([]);
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      await sut.setLocked(auth, album.id, { isLocked: true });
+
+      expect(mocks.asset.updateAll).not.toHaveBeenCalled();
+      expect(mocks.album.removeAssetsFromAllExcept).not.toHaveBeenCalled();
+      expect(mocks.album.update).toHaveBeenCalledWith(album.id, { id: album.id, isLocked: true }, owner.id);
+    });
+
+    it('should return the correct asset count after locking, not the mapAlbum default of 0', async () => {
+      const album = AlbumFactory.create({ isLocked: false });
+      const { user: owner } = album.albumUsers.find(({ role }) => role === AlbumUserRole.Owner)!;
+      mocks.access.album.checkOwnerAccess.mockResolvedValue(new Set([album.id]));
+      mocks.album.getById.mockResolvedValue(getForAlbum(album));
+      mocks.album.getAllAssetIds.mockResolvedValue(['asset-1', 'asset-2']);
+      mocks.album.update.mockResolvedValue(getForAlbum({ ...album, isLocked: true }));
+      mocks.album.getMetadataForIds.mockResolvedValue([
+        { albumId: album.id, assetCount: 2, startDate: null, endDate: null, lastModifiedAssetTimestamp: null },
+      ]);
+      const auth = AuthFactory.from(owner).session({ hasElevatedPermission: true }).build();
+
+      const result = await sut.setLocked(auth, album.id, { isLocked: true });
+
+      expect(result.assetCount).toBe(2);
+    });
+  });
+
   describe('addUsers', () => {
     it('should throw an error if the auth user is not the owner', async () => {
       const album = AlbumFactory.create();
@@ -605,7 +747,7 @@ describe(AlbumService.name, () => {
       );
 
       expect(mocks.albumUser.delete).not.toHaveBeenCalled();
-      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(user1.id, new Set([album.id]));
+      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(user1.id, new Set([album.id]), undefined);
     });
 
     it('should allow a shared user to remove themselves', async () => {
@@ -694,7 +836,7 @@ describe(AlbumService.name, () => {
       await sut.get(AuthFactory.create(owner), album.id);
 
       expect(mocks.album.getById).toHaveBeenCalledWith(album.id, { withAssets: false }, owner.id);
-      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(owner.id, new Set([album.id]));
+      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(owner.id, new Set([album.id]), undefined);
     });
 
     it('should get a shared album via a shared link', async () => {
@@ -740,6 +882,7 @@ describe(AlbumService.name, () => {
         user.id,
         new Set([album.id]),
         AlbumUserRole.Viewer,
+        undefined,
       );
     });
 
@@ -747,11 +890,12 @@ describe(AlbumService.name, () => {
       const auth = AuthFactory.create();
       await expect(sut.get(auth, 'album-123')).rejects.toBeInstanceOf(BadRequestException);
 
-      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set(['album-123']));
+      expect(mocks.access.album.checkOwnerAccess).toHaveBeenCalledWith(auth.user.id, new Set(['album-123']), undefined);
       expect(mocks.access.album.checkSharedAlbumAccess).toHaveBeenCalledWith(
         auth.user.id,
         new Set(['album-123']),
         AlbumUserRole.Viewer,
+        undefined,
       );
     });
   });

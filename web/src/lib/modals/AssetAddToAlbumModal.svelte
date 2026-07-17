@@ -24,4 +24,4 @@
   };
 </script>
 
-<AlbumPickerModal onClose={handleClose} />
+<AlbumPickerModal onClose={handleClose} {assetIds} />

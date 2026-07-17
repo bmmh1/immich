@@ -6,6 +6,7 @@
     isSelectableRowType,
   } from '$lib/components/shared-components/album-selection/album-selection-utils';
   import { eventManager } from '$lib/managers/event-manager.svelte';
+  import { resolveAlbumSelectionForAdd } from '$lib/services/album.service';
   import { albumViewSettings } from '$lib/stores/preferences.store';
   import { createAlbum, getAllAlbums, type AlbumResponseDto } from '@immich/sdk';
   import { Button, Icon, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
@@ -23,9 +24,17 @@
 
   type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
+    // When provided, this picker is being used to add these assets to whichever album(s) are
+    // selected -- enables the locked-album selection rules (single locked album only, PIN
+    // elevation, exclusivity confirmation). Omitted when the picker is used for plain album
+    // selection unrelated to adding assets (e.g. SchemaAlbumPicker), where none of that applies.
+    assetIds?: string[];
   };
 
-  let { onClose }: Props = $props();
+  let { onClose, assetIds }: Props = $props();
+
+  const resolveSelection = (selected: AlbumResponseDto[]) =>
+    assetIds ? resolveAlbumSelectionForAdd(selected, assetIds) : Promise.resolve<'proceed'>('proceed');
 
   onMount(async () => {
     albums = await getAllAlbums({});
@@ -48,12 +57,20 @@
     onClose([album]);
   };
 
-  const handleAlbumClick = (album?: AlbumResponseDto) => {
+  const handleAlbumClick = async (album?: AlbumResponseDto) => {
     if (multiSelectActive) {
       handleMultiSelect(album);
       return;
     }
     if (album) {
+      const resolution = await resolveSelection([album]);
+      if (resolution === 'redirected') {
+        onClose();
+        return;
+      }
+      if (resolution === 'blocked') {
+        return;
+      }
       onClose([album]);
       return;
     }
@@ -75,13 +92,23 @@
     multiSelectedAlbumIds.splice(index, 1);
   };
 
-  const handleMultiSubmit = () => {
+  const handleMultiSubmit = async () => {
     const selectedAlbums = new Set(albums.filter(({ id }) => multiSelectedAlbumIds.includes(id)));
-    if (selectedAlbums.size > 0) {
-      onClose([...selectedAlbums]);
-    } else {
+    if (selectedAlbums.size === 0) {
       onClose();
+      return;
     }
+
+    const resolution = await resolveSelection([...selectedAlbums]);
+    if (resolution === 'redirected') {
+      onClose();
+      return;
+    }
+    if (resolution === 'blocked') {
+      return;
+    }
+
+    onClose([...selectedAlbums]);
   };
 
   const onEnter = async () => {
@@ -97,10 +124,18 @@
       }
       case AlbumModalRowType.ALBUM_ITEM: {
         if (multiSelectActive) {
-          handleMultiSubmit();
+          await handleMultiSubmit();
           break;
         }
         if (item.album) {
+          const resolution = await resolveSelection([item.album]);
+          if (resolution === 'redirected') {
+            onClose();
+            break;
+          }
+          if (resolution === 'blocked') {
+            break;
+          }
           onClose([item.album]);
         }
         break;
