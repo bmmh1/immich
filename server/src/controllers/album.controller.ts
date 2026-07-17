@@ -3,7 +3,6 @@ import { ApiTags } from '@nestjs/swagger';
 import { Endpoint, HistoryBuilder } from 'src/decorators';
 import {
   AddUsersDto,
-  AlbumLockDto,
   AlbumResponseDto,
   AlbumsAddAssetsDto,
   AlbumsAddAssetsResponseDto,
@@ -98,22 +97,6 @@ export class AlbumController {
   })
   deleteAlbum(@Auth() auth: AuthDto, @Param() { id }: UUIDParamDto) {
     return this.service.delete(auth, id);
-  }
-
-  @Patch(':id/lock')
-  @Authenticated({ permission: Permission.AlbumLock })
-  @Endpoint({
-    summary: 'Lock or unlock an album',
-    description:
-      "Lock or unlock an album. Only the album owner may do this, and only using their own elevated (PIN-verified) session. Locking an album hides its assets everywhere else (other albums, timeline, map) until the album is unlocked; unlocking restores each asset's visibility but does not restore membership in other albums it was evicted from while locked.",
-    history: new HistoryBuilder().added('v3.1.0').alpha('v3.1.0'),
-  })
-  setAlbumLocked(
-    @Auth() auth: AuthDto,
-    @Param() { id }: UUIDParamDto,
-    @Body() dto: AlbumLockDto,
-  ): Promise<AlbumResponseDto> {
-    return this.service.setLocked(auth, id, dto);
   }
 
   @Authenticated({ permission: Permission.AlbumRead, sharedLink: true })

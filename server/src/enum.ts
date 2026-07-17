@@ -141,7 +141,6 @@ export enum Permission {
   AlbumStatistics = 'album.statistics',
   AlbumShare = 'album.share',
   AlbumDownload = 'album.download',
-  AlbumLock = 'album.lock',
 
   AlbumAssetCreate = 'albumAsset.create',
   AlbumAssetDelete = 'albumAsset.delete',

@@ -213,11 +213,6 @@ const checkOtherAccess = async (access: AccessRepository, request: OtherAccessRe
       return await access.album.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
     }
 
-    case Permission.AlbumLock: {
-      // Only the album owner may lock/unlock, and only using their own elevated (PIN-verified) session.
-      return await access.album.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
-    }
-
     case Permission.AlbumShare: {
       const isOwner = await access.album.checkOwnerAccess(auth.user.id, ids, auth.session?.hasElevatedPermission);
       const isShared = await access.album.checkSharedAlbumAccess(

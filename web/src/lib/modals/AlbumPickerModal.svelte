@@ -6,7 +6,6 @@
     isSelectableRowType,
   } from '$lib/components/shared-components/album-selection/album-selection-utils';
   import { eventManager } from '$lib/managers/event-manager.svelte';
-  import { resolveAlbumSelectionForAdd } from '$lib/services/album.service';
   import { albumViewSettings } from '$lib/stores/preferences.store';
   import { createAlbum, getAllAlbums, type AlbumResponseDto } from '@immich/sdk';
   import { Button, Icon, Modal, ModalBody, ModalFooter, Text } from '@immich/ui';
@@ -25,19 +24,21 @@
   type Props = {
     onClose: (albums?: AlbumResponseDto[]) => void;
     // When provided, this picker is being used to add these assets to whichever album(s) are
-    // selected -- enables the locked-album selection rules (single locked album only, PIN
-    // elevation, exclusivity confirmation). Omitted when the picker is used for plain album
-    // selection unrelated to adding assets (e.g. SchemaAlbumPicker), where none of that applies.
+    // selected.
     assetIds?: string[];
+    // When true, only locked albums are offered as targets, and creating a new album creates it
+    // already locked. Used exclusively from within the Locked Folder view, where every asset being
+    // added is already locked -- a locked album can never be created any other way, and can never
+    // receive a not-yet-locked asset. Omitted (false) everywhere else, where locked albums are
+    // never offered at all.
+    lockedOnly?: boolean;
   };
 
-  let { onClose, assetIds }: Props = $props();
-
-  const resolveSelection = (selected: AlbumResponseDto[]) =>
-    assetIds ? resolveAlbumSelectionForAdd(selected, assetIds) : Promise.resolve<'proceed'>('proceed');
+  let { onClose, assetIds, lockedOnly = false }: Props = $props();
 
   onMount(async () => {
-    albums = await getAllAlbums({});
+    const allAlbums = await getAllAlbums({});
+    albums = allAlbums.filter((album) => album.isLocked === lockedOnly);
     recentAlbums = [...albums].sort((a, b) => (new Date(a.updatedAt) > new Date(b.updatedAt) ? -1 : 1)).slice(0, 3);
     loading = false;
   });
@@ -52,25 +53,17 @@
   const selectableRowCount = $derived(albumModalRows.filter((row) => isSelectableRowType(row.type)).length);
 
   const onNewAlbum = async (name: string) => {
-    const album = await createAlbum({ createAlbumDto: { albumName: name } });
+    const album = await createAlbum({ createAlbumDto: { albumName: name, isLocked: lockedOnly } });
     eventManager.emit('AlbumCreate', album);
     onClose([album]);
   };
 
-  const handleAlbumClick = async (album?: AlbumResponseDto) => {
+  const handleAlbumClick = (album?: AlbumResponseDto) => {
     if (multiSelectActive) {
       handleMultiSelect(album);
       return;
     }
     if (album) {
-      const resolution = await resolveSelection([album]);
-      if (resolution === 'redirected') {
-        onClose();
-        return;
-      }
-      if (resolution === 'blocked') {
-        return;
-      }
       onClose([album]);
       return;
     }
@@ -92,19 +85,10 @@
     multiSelectedAlbumIds.splice(index, 1);
   };
 
-  const handleMultiSubmit = async () => {
+  const handleMultiSubmit = () => {
     const selectedAlbums = new Set(albums.filter(({ id }) => multiSelectedAlbumIds.includes(id)));
     if (selectedAlbums.size === 0) {
       onClose();
-      return;
-    }
-
-    const resolution = await resolveSelection([...selectedAlbums]);
-    if (resolution === 'redirected') {
-      onClose();
-      return;
-    }
-    if (resolution === 'blocked') {
       return;
     }
 
@@ -124,18 +108,10 @@
       }
       case AlbumModalRowType.ALBUM_ITEM: {
         if (multiSelectActive) {
-          await handleMultiSubmit();
+          handleMultiSubmit();
           break;
         }
         if (item.album) {
-          const resolution = await resolveSelection([item.album]);
-          if (resolution === 'redirected') {
-            onClose();
-            break;
-          }
-          if (resolution === 'blocked') {
-            break;
-          }
           onClose([item.album]);
         }
         break;

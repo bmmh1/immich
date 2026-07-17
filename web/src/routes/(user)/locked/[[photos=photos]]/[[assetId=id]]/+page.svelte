@@ -4,6 +4,7 @@
   import OnEvents from '$lib/components/OnEvents.svelte';
   import ButtonContextMenu from '$lib/components/shared-components/context-menu/ButtonContextMenu.svelte';
   import EmptyPlaceholder from '$lib/components/shared-components/EmptyPlaceholder.svelte';
+  import MenuOption from '$lib/components/shared-components/context-menu/MenuOption.svelte';
   import ChangeDate from '$lib/components/timeline/actions/ChangeDateAction.svelte';
   import ChangeLocation from '$lib/components/timeline/actions/ChangeLocationAction.svelte';
   import DeleteAssets from '$lib/components/timeline/actions/DeleteAssetsAction.svelte';
@@ -15,10 +16,12 @@
   import { AssetAction } from '$lib/constants';
   import { assetMultiSelectManager } from '$lib/managers/asset-multi-select-manager.svelte';
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
+  import AssetAddToAlbumModal from '$lib/modals/AssetAddToAlbumModal.svelte';
   import { Route } from '$lib/route';
   import { getUserActions } from '$lib/services/user.service';
   import { AssetVisibility } from '@immich/sdk';
-  import { mdiDotsVertical } from '@mdi/js';
+  import { modalManager } from '@immich/ui';
+  import { mdiDotsVertical, mdiPlus } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -41,6 +44,14 @@
   const handleMoveOffLockedFolder = (assetIds: string[]) => {
     assetMultiSelectManager.clear();
     timelineManager.removeAssets(assetIds);
+  };
+
+  // Every asset here already has Locked visibility, so this is the only place a locked album can
+  // be populated (or created) from -- the picker only offers locked albums as targets, and
+  // creating a new album here creates it already locked.
+  const handleAddToLockedAlbum = () => {
+    const assetIds = assetMultiSelectManager.assets.map((asset) => asset.id);
+    void modalManager.show(AssetAddToAlbumModal, { assetIds, lockedOnly: true });
   };
 
   const { LockSession } = $derived(getUserActions($t));
@@ -78,6 +89,7 @@
     <SelectAllAssets withText {timelineManager} assetInteraction={assetMultiSelectManager} />
     <SetVisibilityAction unlock onVisibilitySet={handleMoveOffLockedFolder} />
     <ButtonContextMenu icon={mdiDotsVertical} title={$t('menu')}>
+      <MenuOption icon={mdiPlus} text={$t('add_to_album')} onClick={handleAddToLockedAlbum} />
       <DownloadAction menuItem />
       <ChangeDate menuItem />
       <ChangeLocation menuItem />

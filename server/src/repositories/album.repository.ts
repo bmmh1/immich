@@ -307,25 +307,6 @@ export class AlbumRepository {
   }
 
   /**
-   * Remove the given assets from every album except the one specified.
-   * Used when locking an album: the assets stay in the locked album but are evicted
-   * from any other album they happen to also belong to.
-   */
-  @GenerateSql({ params: [DummyValue.UUID, [DummyValue.UUID]] })
-  @Chunked({ paramIndex: 1 })
-  async removeAssetsFromAllExcept(albumId: string, assetIds: string[]): Promise<void> {
-    if (assetIds.length === 0) {
-      return;
-    }
-
-    await this.db
-      .deleteFrom('album_asset')
-      .where('album_asset.assetId', 'in', assetIds)
-      .where('album_asset.albumId', '!=', albumId)
-      .execute();
-  }
-
-  /**
    * Get every asset ID currently in the given album (no filter).
    */
   @GenerateSql({ params: [DummyValue.UUID] })

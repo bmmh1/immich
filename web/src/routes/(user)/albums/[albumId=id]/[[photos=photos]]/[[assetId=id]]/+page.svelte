@@ -38,14 +38,10 @@
   import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
   import { Route } from '$lib/route';
   import {
-    ALBUM_LOCK_RESUME_ACTION_PARAM,
-    ALBUM_LOCK_RESUME_ALBUM_ID_PARAM,
-    applyAlbumLocked,
     getAlbumActions,
     getAlbumAssetsActions,
     handleDeleteAlbum,
     handleDownloadAlbum,
-    handleSetAlbumLocked,
   } from '$lib/services/album.service';
   import { getGlobalActions } from '$lib/services/app.service';
   import { getAssetBulkActions } from '$lib/services/asset.service';
@@ -74,8 +70,6 @@
     mdiImageOutline,
     mdiImagePlusOutline,
     mdiLink,
-    mdiLock,
-    mdiLockOpenVariant,
     mdiPlus,
     mdiPresentationPlay,
   } from '@mdi/js';
@@ -141,25 +135,6 @@
 
   const refreshAlbum = async () => {
     album = await getAlbumInfo({ id: album.id });
-  };
-
-  const handleLockToggle = async () => {
-    const wasLocking = !album.isLocked;
-    const ok = await handleSetAlbumLocked(album, wasLocking);
-    if (!ok) {
-      return;
-    }
-
-    if (wasLocking && !authManager.isElevated) {
-      // Locking deliberately doesn't require elevation, so we may have just locked the very
-      // album we're looking at without being elevated ourselves -- it's no longer accessible to
-      // this session. Navigate away instead of reloading it in place, which would otherwise
-      // immediately bounce through the PIN prompt right after an action that didn't need one.
-      await goto(Route.albums());
-      return;
-    }
-
-    await refreshAlbum();
   };
 
   const setModeToView = async () => {
@@ -234,33 +209,6 @@
 
   let album = $derived(data.album);
   let albumId = $derived(album.id);
-
-  // If the user tried to lock/unlock this album while not yet elevated, handleSetAlbumLocked
-  // already showed the confirmation dialog and sent them through the PIN prompt, which lands
-  // back here with this query param set. Resume the action now that the session is elevated,
-  // without showing the confirmation a second time -- and strip the param so a page refresh
-  // doesn't repeat it.
-  let hasResumedLockAction = false;
-  $effect(() => {
-    if (hasResumedLockAction) {
-      return;
-    }
-
-    const resumeAction = page.url.searchParams.get(ALBUM_LOCK_RESUME_ACTION_PARAM);
-    const resumeAlbumId = page.url.searchParams.get(ALBUM_LOCK_RESUME_ALBUM_ID_PARAM);
-    if ((resumeAction !== 'lock' && resumeAction !== 'unlock') || resumeAlbumId !== album.id) {
-      return;
-    }
-
-    hasResumedLockAction = true;
-
-    const url = new URL(page.url);
-    url.searchParams.delete(ALBUM_LOCK_RESUME_ACTION_PARAM);
-    url.searchParams.delete(ALBUM_LOCK_RESUME_ALBUM_ID_PARAM);
-    replaceState(url, page.state);
-
-    void applyAlbumLocked(album, resumeAction === 'lock');
-  });
 
   const containsEditors = $derived(album?.shared && album.albumUsers.some(({ role }) => role === AlbumUserRole.Editor));
   const albumUsers = $derived(showAlbumUsers && containsEditors ? album.albumUsers.map(({ user }) => user) : []);
@@ -628,11 +576,6 @@
                 {/if}
 
                 {#if isOwned}
-                  <MenuOption
-                    icon={album.isLocked ? mdiLockOpenVariant : mdiLock}
-                    text={album.isLocked ? $t('unlock_album') : $t('lock_album')}
-                    onClick={handleLockToggle}
-                  />
                   <MenuOption
                     icon={mdiDeleteOutline}
                     text={$t('delete_album')}

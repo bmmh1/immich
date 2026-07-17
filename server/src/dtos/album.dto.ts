@@ -37,6 +37,12 @@ const CreateAlbumSchema = z
     description: z.string().optional().describe('Album description'),
     albumUsers: z.array(AlbumUserCreateSchema).optional().describe('Album users'),
     assetIds: z.array(z.uuidv4()).optional().describe('Initial asset IDs'),
+    isLocked: z
+      .boolean()
+      .optional()
+      .describe(
+        'Create the album already locked. Every asset in `assetIds` must already have Locked visibility (i.e. already be in the locked folder) -- an album can only ever be locked at creation time, and can only ever contain assets that are already locked.',
+      ),
   })
   .meta({ id: 'CreateAlbumDto' });
 
@@ -225,11 +231,3 @@ export const mapAlbum = (entity: MaybeDehydrated<MapAlbumDto>): AlbumResponseDto
     order: entity.order,
   };
 };
-
-const AlbumLockSchema = z
-  .object({
-    isLocked: z.boolean().describe('Lock or unlock the album'),
-  })
-  .meta({ id: 'AlbumLockDto' });
-
-export class AlbumLockDto extends createZodDto(AlbumLockSchema) {}

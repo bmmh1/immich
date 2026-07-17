@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { replaceState } from '$app/navigation';
-  import { page } from '$app/state';
   import AlbumCardGroup from '$lib/components/album-page/AlbumCardGroup.svelte';
   import AlbumsTable from '$lib/components/album-page/AlbumsTable.svelte';
   import OnEvents from '$lib/components/OnEvents.svelte';
@@ -10,12 +8,8 @@
   import AlbumEditModal from '$lib/modals/AlbumEditModal.svelte';
   import AlbumOptionsModal from '$lib/modals/AlbumOptionsModal.svelte';
   import {
-    ALBUM_LOCK_RESUME_ACTION_PARAM,
-    ALBUM_LOCK_RESUME_ALBUM_ID_PARAM,
-    applyAlbumLocked,
     handleDeleteAlbum,
     handleDownloadAlbum,
-    handleSetAlbumLocked,
     redirectIfLockedAndNotElevated,
   } from '$lib/services/album.service';
   import {
@@ -32,14 +26,7 @@
   import { normalizeSearchString } from '$lib/utils/string-utils';
   import { AlbumUserRole, type AlbumResponseDto, type SharedLinkResponseDto } from '@immich/sdk';
   import { modalManager } from '@immich/ui';
-  import {
-    mdiDeleteOutline,
-    mdiDownload,
-    mdiLock,
-    mdiLockOpenVariant,
-    mdiRenameOutline,
-    mdiShareVariantOutline,
-  } from '@mdi/js';
+  import { mdiDeleteOutline, mdiDownload, mdiRenameOutline, mdiShareVariantOutline } from '@mdi/js';
   import { groupBy } from 'lodash-es';
   import { onMount, type Snippet } from 'svelte';
   import { t } from 'svelte-i18n';
@@ -199,38 +186,6 @@
     }
   });
 
-  // If the user tried to lock/unlock an album from this list while not yet elevated,
-  // handleSetAlbumLocked already showed the confirmation dialog and sent them through the PIN
-  // prompt, which lands back here with these query params set. Resume the action now that the
-  // session is elevated, without showing the confirmation a second time -- and strip the params
-  // so a page refresh doesn't repeat it.
-  let hasResumedLockAction = false;
-  $effect(() => {
-    if (hasResumedLockAction) {
-      return;
-    }
-
-    const resumeAction = page.url.searchParams.get(ALBUM_LOCK_RESUME_ACTION_PARAM);
-    const resumeAlbumId = page.url.searchParams.get(ALBUM_LOCK_RESUME_ALBUM_ID_PARAM);
-    if (resumeAction !== 'lock' && resumeAction !== 'unlock') {
-      return;
-    }
-
-    const target = [...ownedAlbums, ...sharedAlbums].find(({ id }) => id === resumeAlbumId);
-    if (!target) {
-      return;
-    }
-
-    hasResumedLockAction = true;
-
-    const url = new URL(page.url);
-    url.searchParams.delete(ALBUM_LOCK_RESUME_ACTION_PARAM);
-    url.searchParams.delete(ALBUM_LOCK_RESUME_ALBUM_ID_PARAM);
-    replaceState(url, page.state);
-
-    void applyAlbumLocked(target, resumeAction === 'lock');
-  });
-
   const showAlbumContextMenu = (contextMenuDetail: ContextMenuPosition, album: AlbumResponseDto) => {
     selectedAlbum = album;
     contextMenuPosition = {
@@ -244,7 +199,7 @@
     isOpen = false;
   };
 
-  const handleSelect = async (action: 'edit' | 'share' | 'download' | 'delete' | 'lock' | 'unlock') => {
+  const handleSelect = async (action: 'edit' | 'share' | 'download' | 'delete') => {
     closeAlbumContextMenu();
 
     if (!selectedAlbum) {
@@ -275,14 +230,6 @@
 
       case 'delete': {
         await handleDeleteAlbum(selectedAlbum);
-        break;
-      }
-
-      case 'lock':
-      case 'unlock': {
-        // handleSetAlbumLocked emits AlbumUpdate on success, which onAlbumUpdate below already
-        // applies to ownedAlbums/sharedAlbums, so no manual refresh is needed here.
-        await handleSetAlbumLocked(selectedAlbum, action === 'lock');
         break;
       }
     }
@@ -360,13 +307,6 @@
     <MenuOption icon={mdiShareVariantOutline} text={$t('share')} onClick={() => handleSelect('share')} />
   {/if}
   <MenuOption icon={mdiDownload} text={$t('download')} onClick={() => handleSelect('download')} />
-  {#if showFullContextMenu && selectedAlbum}
-    <MenuOption
-      icon={selectedAlbum.isLocked ? mdiLockOpenVariant : mdiLock}
-      text={selectedAlbum.isLocked ? $t('unlock_album') : $t('lock_album')}
-      onClick={() => handleSelect(selectedAlbum!.isLocked ? 'unlock' : 'lock')}
-    />
-  {/if}
   {#if showFullContextMenu}
     <MenuOption icon={mdiDeleteOutline} text={$t('delete')} onClick={() => handleSelect('delete')} />
   {/if}

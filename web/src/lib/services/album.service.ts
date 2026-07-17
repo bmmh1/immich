@@ -5,14 +5,7 @@ import {
   AlbumUserRole,
   BulkIdErrorReason,
   deleteAlbum,
-  getAllAlbums,
-  getAuthStatus,
   removeUserFromAlbum,
-  // NOTE: `setAlbumLocked` (and its `albumLockDto` param) is the expected generated name for the
-  // new `PATCH /albums/:id/lock` endpoint, following this SDK's existing operationId convention
-  // (controller method name -> SDK function name). Confirm/adjust after running `mise run
-  // open-api-typescript` to regenerate packages/sdk/src/fetch-client.ts from the updated server.
-  setAlbumLocked,
   updateAlbumInfo,
   updateAlbumUser,
   type AlbumResponseDto,
@@ -23,16 +16,7 @@ import {
   type UserResponseDto,
 } from '@immich/sdk';
 import { modalManager, toastManager, type ActionItem } from '@immich/ui';
-import {
-  mdiImageOutline,
-  mdiLink,
-  mdiLock,
-  mdiLockOpenVariant,
-  mdiPlus,
-  mdiPlusBoxOutline,
-  mdiShareVariantOutline,
-  mdiUpload,
-} from '@mdi/js';
+import { mdiImageOutline, mdiLink, mdiPlus, mdiPlusBoxOutline, mdiShareVariantOutline, mdiUpload } from '@mdi/js';
 import { type MessageFormatter } from 'svelte-i18n';
 import { goto } from '$app/navigation';
 import { page } from '$app/state';
@@ -98,21 +82,7 @@ export const getAlbumActions = ($t: MessageFormatter, album: AlbumResponseDto) =
     },
   };
 
-  const Lock: ActionItem = {
-    title: $t('lock_album'),
-    icon: mdiLock,
-    $if: () => isOwned && !album.isLocked,
-    onAction: () => handleSetAlbumLocked(album, true),
-  };
-
-  const Unlock: ActionItem = {
-    title: $t('unlock_album'),
-    icon: mdiLockOpenVariant,
-    $if: () => isOwned && album.isLocked,
-    onAction: () => handleSetAlbumLocked(album, false),
-  };
-
-  return { Share, AddUsers, CreateSharedLink, Lock, Unlock };
+  return { Share, AddUsers, CreateSharedLink };
 };
 
 export const getAlbumAssetActions = ($t: MessageFormatter, album: AlbumResponseDto, asset: AssetResponseDto) => {
@@ -287,82 +257,6 @@ const handleUpdateThumbnail = async (album: AlbumResponseDto, assetId: string) =
   }
 };
 
-// Query params used on the continue URL to signal a pending lock/unlock action that should
-// resume automatically once the PIN prompt elevates the session -- without this, the action was
-// silently abandoned after PIN entry, requiring a second manual click. The album ID is carried
-// separately since this can be triggered from a page that doesn't have it in its own URL (the
-// album list), not just the album detail page.
-export const ALBUM_LOCK_RESUME_ACTION_PARAM = 'resumeLockAction';
-export const ALBUM_LOCK_RESUME_ALBUM_ID_PARAM = 'resumeLockAlbumId';
-
-// Query param used to reopen the "add to album" picker after a PIN-prompt round trip triggered by
-// picking a locked album while not elevated. Unlike lock/unlock, the add itself is never
-// auto-resumed -- only the picker UI reopens with the same asset selection, so the user makes a
-// fresh, deliberate choice once elevated instead of an add silently firing the moment they enter
-// their PIN.
-export const ALBUM_ADD_RESUME_ASSET_IDS_PARAM = 'resumeAddAssetIds';
-
-/**
- * Performs the actual lock/unlock API call, with no confirmation dialog and no elevation check.
- * Only call this after the caller has already confirmed the action AND verified the session is
- * elevated -- e.g. from handleSetAlbumLocked below, or when resuming a pending action after the
- * user returns from the PIN prompt page already having confirmed once.
- */
-export const applyAlbumLocked = async (album: AlbumResponseDto, isLocked: boolean) => {
-  const $t = await getFormatter();
-  try {
-    const response = await setAlbumLocked({ id: album.id, albumLockDto: { isLocked } });
-    eventManager.emit('AlbumUpdate', response);
-    toastManager.primary(isLocked ? $t('album_locked') : $t('album_unlocked'));
-    return true;
-  } catch (error) {
-    handleError(error, isLocked ? $t('errors.unable_to_lock_album') : $t('errors.unable_to_unlock_album'));
-    return false;
-  }
-};
-
-export const handleSetAlbumLocked = async (album: AlbumResponseDto, isLocked: boolean) => {
-  const $t = await getFormatter();
-
-  // Mirrors the confirmation step SetVisibilityAction.svelte already uses for the single-asset
-  // locked-folder toggle -- streamlined to the same UX rather than inventing a new pattern.
-  const isConfirmed = await modalManager.showDialog({
-    title: isLocked ? $t('lock_album') : $t('unlock_album'),
-    prompt: isLocked ? $t('lock_album_confirmation') : $t('unlock_album_confirmation'),
-    confirmText: isLocked ? $t('lock') : $t('unlock'),
-    confirmColor: isLocked ? 'primary' : 'danger',
-    icon: isLocked ? mdiLock : mdiLockOpenVariant,
-  });
-
-  if (!isConfirmed) {
-    return false;
-  }
-
-  // Matches the single-asset locked-folder feature's security model: locking never requires
-  // elevation (you're only making something MORE hidden -- just the confirmation above is
-  // enough). Unlocking, however, does require the owner's own elevated (PIN-verified) session,
-  // since it's what actually reveals previously-hidden content. The server enforces this the same
-  // way for both: checkOwnerAccess excludes already-locked items from non-elevated access, so a
-  // non-elevated unlock attempt would be rejected there regardless -- this check here just avoids
-  // a failed round-trip and gives a proper PIN-prompt redirect instead of a generic error.
-  if (!isLocked) {
-    const { isElevated } = await getAuthStatus();
-    if (!isElevated) {
-      // The user already confirmed above -- carry that intent through the PIN prompt via query
-      // params on the CURRENT page (album list or album detail, whichever this was triggered from)
-      // so the action resumes automatically once elevated, right back where the user was, instead
-      // of silently dropping it (requiring a second manual click) or always jumping into the album.
-      const continueUrl = new URL(page.url);
-      continueUrl.searchParams.set(ALBUM_LOCK_RESUME_ACTION_PARAM, 'unlock');
-      continueUrl.searchParams.set(ALBUM_LOCK_RESUME_ALBUM_ID_PARAM, album.id);
-      await goto(Route.pinPrompt({ continue: `${continueUrl.pathname}${continueUrl.search}` }));
-      return false;
-    }
-  }
-
-  return applyAlbumLocked(album, isLocked);
-};
-
 export const handleUpdateAlbum = async (album: AlbumResponseDto, dto: UpdateAlbumDto) => {
   const $t = await getFormatter();
   const { id } = album;
@@ -405,78 +299,6 @@ export const redirectIfLockedAndNotElevated = async (album: AlbumResponseDto): P
   const continueUrl = new URL(Route.viewAlbum({ id: album.id }), page.url);
   await goto(Route.pinPrompt({ continue: `${continueUrl.pathname}${continueUrl.search}` }));
   return true;
-};
-
-type AlbumSelectionResolution = 'proceed' | 'blocked' | 'redirected';
-
-/**
- * Vets a set of albums picked from the "add to album" picker for `assetIds` before actually
- * adding anything. Mirrors the exclusivity rule `setLocked()` already enforces server-side: a
- * locked asset lives in exactly one album, full stop. So:
- *  - Picking 2+ locked albums together, or mixing a locked album with unlocked ones, is never
- *    valid (elevated or not) -- blocked with a toast, selection is left alone so the user can fix
- *    it themselves.
- *  - Picking a single locked album while not elevated redirects to the PIN prompt and reopens
- *    this same picker (with the same asset selection) on return -- no auto-add.
- *  - Picking a single locked album while elevated is allowed, but if any of the assets already
- *    belong to other albums, those memberships are about to be removed (locking pulls an asset
- *    out of every other album, not just unlocked ones) -- confirm with the user first, naming
- *    every album that will lose the asset(s).
- *  - Any number of unlocked albums together is always fine, no special handling.
- */
-export const resolveAlbumSelectionForAdd = async (
-  albums: AlbumResponseDto[],
-  assetIds: string[],
-): Promise<AlbumSelectionResolution> => {
-  const $t = await getFormatter();
-  const lockedAlbums = albums.filter((album) => album.isLocked);
-  const unlockedAlbums = albums.filter((album) => !album.isLocked);
-
-  if (lockedAlbums.length > 1 || (lockedAlbums.length === 1 && unlockedAlbums.length > 0)) {
-    toastManager.warning($t('album_add_locked_selection_invalid'));
-    return 'blocked';
-  }
-
-  if (lockedAlbums.length === 0) {
-    return 'proceed';
-  }
-
-  const [lockedAlbum] = lockedAlbums;
-
-  if (!authManager.isElevated) {
-    const continueUrl = new URL(page.url);
-    continueUrl.searchParams.set(ALBUM_ADD_RESUME_ASSET_IDS_PARAM, assetIds.join(','));
-    await goto(Route.pinPrompt({ continue: `${continueUrl.pathname}${continueUrl.search}` }));
-    return 'redirected';
-  }
-
-  const membershipsByAsset = await Promise.all(assetIds.map((assetId) => getAllAlbums({ assetId })));
-  const otherAlbumNames = new Set<string>();
-  for (const memberships of membershipsByAsset) {
-    for (const album of memberships) {
-      if (album.id !== lockedAlbum.id) {
-        otherAlbumNames.add(album.albumName);
-      }
-    }
-  }
-
-  if (otherAlbumNames.size > 0) {
-    const confirmed = await modalManager.showDialog({
-      title: $t('album_add_to_locked_confirmation_title'),
-      prompt: $t('album_add_to_locked_confirmation', {
-        values: { count: assetIds.length, values: [...otherAlbumNames].join(', '), albumName: lockedAlbum.albumName },
-      }),
-      confirmText: $t('add'),
-      confirmColor: 'primary',
-      icon: mdiLock,
-    });
-
-    if (!confirmed) {
-      return 'blocked';
-    }
-  }
-
-  return 'proceed';
 };
 
 export const handleDeleteAlbum = async (album: AlbumResponseDto, options?: { prompt?: boolean; notify?: boolean }) => {
