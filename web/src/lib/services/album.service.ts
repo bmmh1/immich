@@ -157,18 +157,23 @@ const notifyAddToAlbum = ($t: MessageFormatter, albumId: string, assetIds: strin
     ({ error }) => error === BulkIdErrorReason.AlreadyInLockedAlbum,
   ).length;
   let description = $t('assets_cannot_be_added_to_album_count', { values: { count: assetIds.length } });
+  let severity: 'primary' | 'info' | 'warning' = 'warning';
 
   if (duplicateCount === assetIds.length) {
     description = $t('assets_were_part_of_album_count', { values: { count: duplicateCount } });
+    severity = 'info';
   } else if (alreadyInLockedAlbumCount === assetIds.length) {
     description = $t('assets_already_in_another_locked_album_count', { values: { count: alreadyInLockedAlbumCount } });
+    severity = 'warning';
   } else if (successCount === assetIds.length) {
     description = $t('assets_added_to_album_count', { values: { count: successCount } });
+    severity = 'primary';
   } else if (successCount > 0) {
     description = $t('assets_added_to_album_partial_count', { values: { successCount, totalCount: assetIds.length } });
+    severity = 'primary';
   }
 
-  toastManager.primary(
+  toastManager[severity](
     { description, button: { label: $t('view_album'), onclick: () => goto(Route.viewAlbum({ id: albumId })) } },
     { timeout: 5000 },
   );
