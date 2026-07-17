@@ -307,6 +307,29 @@ export class AlbumRepository {
   }
 
   /**
+   * Of the given asset IDs, return the ones that already belong to some locked album other than
+   * `excludeAlbumId`. An asset can only ever be in one locked album at a time, so this is used to
+   * reject adding an already-locked-album asset into a different locked album, rather than
+   * silently moving it.
+   */
+  @GenerateSql({ params: [[DummyValue.UUID], DummyValue.UUID] })
+  async getAssetIdsInOtherLockedAlbums(assetIds: string[], excludeAlbumId: string): Promise<Set<string>> {
+    if (assetIds.length === 0) {
+      return new Set();
+    }
+
+    return this.db
+      .selectFrom('album_asset')
+      .innerJoin('album', 'album.id', 'album_asset.albumId')
+      .select('album_asset.assetId')
+      .where('album_asset.assetId', 'in', assetIds)
+      .where('album.isLocked', '=', true)
+      .where('album.id', '!=', excludeAlbumId)
+      .execute()
+      .then((rows) => new Set(rows.map((row) => row.assetId)));
+  }
+
+  /**
    * Get every asset ID currently in the given album (no filter).
    */
   @GenerateSql({ params: [DummyValue.UUID] })

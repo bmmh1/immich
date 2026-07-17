@@ -16,12 +16,11 @@
   import { AssetAction } from '$lib/constants';
   import { assetMultiSelectManager } from '$lib/managers/asset-multi-select-manager.svelte';
   import { TimelineManager } from '$lib/managers/timeline-manager/timeline-manager.svelte';
-  import AssetAddToAlbumModal from '$lib/modals/AssetAddToAlbumModal.svelte';
   import { Route } from '$lib/route';
+  import { getAssetBulkActions } from '$lib/services/asset.service';
   import { getUserActions } from '$lib/services/user.service';
   import { AssetVisibility } from '@immich/sdk';
-  import { modalManager } from '@immich/ui';
-  import { mdiDotsVertical, mdiPlus } from '@mdi/js';
+  import { mdiDotsVertical } from '@mdi/js';
   import { t } from 'svelte-i18n';
   import type { PageData } from './$types';
 
@@ -46,13 +45,10 @@
     timelineManager.removeAssets(assetIds);
   };
 
-  // Every asset here already has Locked visibility, so this is the only place a locked album can
-  // be populated (or created) from -- the picker only offers locked albums as targets, and
-  // creating a new album here creates it already locked.
-  const handleAddToLockedAlbum = () => {
-    const assetIds = assetMultiSelectManager.assets.map((asset) => asset.id);
-    void modalManager.show(AssetAddToAlbumModal, { assetIds, lockedOnly: true });
-  };
+  // Every asset here already has Locked visibility, so the shared AddToAlbum action (which is
+  // selection-aware: it only offers locked albums when the selection is locked) naturally offers
+  // locked albums here too -- no bespoke handling needed.
+  const { AddToAlbum } = $derived(getAssetBulkActions($t));
 
   const { LockSession } = $derived(getUserActions($t));
 
@@ -89,7 +85,7 @@
     <SelectAllAssets withText {timelineManager} assetInteraction={assetMultiSelectManager} />
     <SetVisibilityAction unlock onVisibilitySet={handleMoveOffLockedFolder} />
     <ButtonContextMenu icon={mdiDotsVertical} title={$t('menu')}>
-      <MenuOption icon={mdiPlus} text={$t('add_to_album')} onClick={handleAddToLockedAlbum} />
+      <MenuOption icon={AddToAlbum.icon} text={AddToAlbum.title} onClick={AddToAlbum.onAction} />
       <DownloadAction menuItem />
       <ChangeDate menuItem />
       <ChangeLocation menuItem />

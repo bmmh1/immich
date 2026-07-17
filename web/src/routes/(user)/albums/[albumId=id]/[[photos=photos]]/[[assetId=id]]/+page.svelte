@@ -455,10 +455,18 @@
     {#if assetMultiSelectManager.selectionActive}
       <AssetSelectControlBar>
         {@const Actions = getAssetBulkActions($t)}
-        <CommandPaletteDefaultProvider name={$t('assets')} actions={Object.values(Actions)} />
+        <CommandPaletteDefaultProvider
+          name={$t('assets')}
+          actions={Object.values(Actions).filter((action) => !album.isLocked || action !== Actions.AddToAlbum)}
+        />
         <CreateSharedLink />
         <SelectAllAssets {timelineManager} assetInteraction={assetMultiSelectManager} />
-        <ActionButton action={Actions.AddToAlbum} />
+        {#if !album.isLocked}
+          <!-- Every asset shown here already belongs to this album. If it's locked, "Add to
+               album" can only ever be a no-op duplicate or a rejected cross-locked-album error,
+               so there's nothing useful it can do here. -->
+          <ActionButton action={Actions.AddToAlbum} />
+        {/if}
         {#if assetMultiSelectManager.isAllUserOwned}
           <FavoriteAction
             removeFavorite={assetMultiSelectManager.isAllFavorite}

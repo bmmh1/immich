@@ -152,11 +152,16 @@ export const addAssetsToAlbums = async (albumIds: string[], assetIds: string[], 
 
 const notifyAddToAlbum = ($t: MessageFormatter, albumId: string, assetIds: string[], results: BulkIdResponseDto[]) => {
   const successCount = results.filter(({ success }) => success).length;
-  const duplicateCount = results.filter(({ error }) => error === 'duplicate').length;
+  const duplicateCount = results.filter(({ error }) => error === BulkIdErrorReason.Duplicate).length;
+  const alreadyInLockedAlbumCount = results.filter(
+    ({ error }) => error === BulkIdErrorReason.AlreadyInLockedAlbum,
+  ).length;
   let description = $t('assets_cannot_be_added_to_album_count', { values: { count: assetIds.length } });
 
   if (duplicateCount === assetIds.length) {
     description = $t('assets_were_part_of_album_count', { values: { count: duplicateCount } });
+  } else if (alreadyInLockedAlbumCount === assetIds.length) {
+    description = $t('assets_already_in_another_locked_album_count', { values: { count: alreadyInLockedAlbumCount } });
   } else if (successCount === assetIds.length) {
     description = $t('assets_added_to_album_count', { values: { count: successCount } });
   } else if (successCount > 0) {
@@ -177,6 +182,8 @@ const notifyAddToAlbums = (
 ) => {
   if (results.error === BulkIdErrorReason.Duplicate) {
     toastManager.info($t('assets_were_part_of_albums_count', { values: { count: assetIds.length } }));
+  } else if (results.error === BulkIdErrorReason.AlreadyInLockedAlbum) {
+    toastManager.warning($t('assets_already_in_another_locked_album_count', { values: { count: assetIds.length } }));
   } else if (results.error) {
     toastManager.warning($t('assets_cannot_be_added_to_albums', { values: { count: assetIds.length } }));
   } else {

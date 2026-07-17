@@ -214,15 +214,25 @@ export class AlbumService extends BaseService {
       // expose it to anyone else, so it's the right check here.
       const existingAssetIds = await this.albumRepository.getAssetIds(id, dto.ids);
       const notPresentAssetIds = dto.ids.filter((assetId) => !existingAssetIds.has(assetId));
+
+      // An asset can only ever belong to one locked album at a time -- if it's already in a
+      // different locked album, reject it outright rather than silently moving it out of that
+      // album.
+      const conflictingAssetIds = await this.albumRepository.getAssetIdsInOtherLockedAlbums(notPresentAssetIds, id);
+      const checkableAssetIds = notPresentAssetIds.filter((assetId) => !conflictingAssetIds.has(assetId));
+
       const allowedAssetIds = await this.checkAccess({
         auth,
         permission: Permission.AssetUpdate,
-        ids: notPresentAssetIds,
+        ids: checkableAssetIds,
       });
 
       results = dto.ids.map((assetId) => {
         if (existingAssetIds.has(assetId)) {
           return { id: assetId, success: false, error: BulkIdErrorReason.DUPLICATE };
+        }
+        if (conflictingAssetIds.has(assetId)) {
+          return { id: assetId, success: false, error: BulkIdErrorReason.ALREADY_IN_LOCKED_ALBUM };
         }
         if (!allowedAssetIds.has(assetId)) {
           return { id: assetId, success: false, error: BulkIdErrorReason.NO_PERMISSION };
@@ -300,12 +310,25 @@ export class AlbumService extends BaseService {
         throw new BadRequestException('A locked album can only contain assets that are already locked');
       }
 
+      // An asset can only ever belong to one locked album at a time -- if it's already in a
+      // different locked album, reject it outright rather than moving it out of that album.
+      const [targetAlbumId] = lockedTargetAlbumIds;
+      const conflictingAssetIds = await this.albumRepository.getAssetIdsInOtherLockedAlbums(
+        dto.assetIds,
+        targetAlbumId,
+      );
+      if (conflictingAssetIds.size === dto.assetIds.length) {
+        results.error = BulkIdErrorReason.ALREADY_IN_LOCKED_ALBUM;
+        return results;
+      }
+      const checkableAssetIds = dto.assetIds.filter((assetId) => !conflictingAssetIds.has(assetId));
+
       // Permission.AssetShare (used below for the unlocked-album path) hardcodes non-elevated
       // access, since it also covers shared-link/album-sharing paths that must never expose locked
       // content -- so it would reject every one of these assets outright. AssetUpdate respects
       // elevation, and organizing an asset the requester already owns into a locked album they
       // also own doesn't expose it to anyone else.
-      allowedAssetIds = await this.checkAccess({ auth, permission: Permission.AssetUpdate, ids: dto.assetIds });
+      allowedAssetIds = await this.checkAccess({ auth, permission: Permission.AssetUpdate, ids: checkableAssetIds });
     } else {
       allowedAssetIds = await this.checkAccess({ auth, permission: Permission.AssetShare, ids: dto.assetIds });
     }
