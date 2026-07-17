@@ -196,21 +196,51 @@ export class AlbumService extends BaseService {
     const album = await this.findOrFail(id, auth.user.id, { withAssets: false });
     await this.requireAccess({ auth, permission: Permission.AlbumAssetCreate, ids: [id] });
 
-    // A locked album can only ever contain assets that are already locked (already sitting in the
-    // locked folder) -- there's no conversion/cascade here, unlike the old "lock an existing
-    // album" behavior. Reject outright rather than silently dropping the offending assets.
+    let results: BulkIdResponseDto[];
+
     if (album.isLocked) {
+      // A locked album can only ever contain assets that are already locked (already sitting in
+      // the locked folder) -- reject outright rather than silently dropping the offending assets.
       const lockedAssetIds = await this.assetRepository.getLockedAssetIds(dto.ids);
       if (lockedAssetIds.size !== dto.ids.length) {
         throw new BadRequestException('A locked album can only contain assets that are already locked');
       }
-    }
 
-    const results = await addAssets(
-      auth,
-      { access: this.accessRepository, bulk: this.albumRepository },
-      { parentId: id, assetIds: dto.ids },
-    );
+      // Can't use the shared addAssets() util below here: it gates each asset via
+      // Permission.AssetShare, which hardcodes non-elevated access -- deliberately, since that
+      // permission also covers shared-link/album-sharing paths that must never expose locked
+      // content. Permission.AssetUpdate does respect elevation, and organizing an asset the
+      // requester already owns (and has already locked) into a locked album they also own doesn't
+      // expose it to anyone else, so it's the right check here.
+      const existingAssetIds = await this.albumRepository.getAssetIds(id, dto.ids);
+      const notPresentAssetIds = dto.ids.filter((assetId) => !existingAssetIds.has(assetId));
+      const allowedAssetIds = await this.checkAccess({
+        auth,
+        permission: Permission.AssetUpdate,
+        ids: notPresentAssetIds,
+      });
+
+      results = dto.ids.map((assetId) => {
+        if (existingAssetIds.has(assetId)) {
+          return { id: assetId, success: false, error: BulkIdErrorReason.DUPLICATE };
+        }
+        if (!allowedAssetIds.has(assetId)) {
+          return { id: assetId, success: false, error: BulkIdErrorReason.NO_PERMISSION };
+        }
+        return { id: assetId, success: true };
+      });
+
+      const newAssetIds = results.filter(({ success }) => success).map(({ id: assetId }) => assetId);
+      if (newAssetIds.length > 0) {
+        await this.albumRepository.addAssetIds(id, newAssetIds);
+      }
+    } else {
+      results = await addAssets(
+        auth,
+        { access: this.accessRepository, bulk: this.albumRepository },
+        { parentId: id, assetIds: dto.ids },
+      );
+    }
 
     const { id: firstNewAssetId } = results.find(({ success }) => success) || {};
     if (firstNewAssetId) {
@@ -250,12 +280,6 @@ export class AlbumService extends BaseService {
       return results;
     }
 
-    const allowedAssetIds = await this.checkAccess({ auth, permission: Permission.AssetShare, ids: dto.assetIds });
-    if (allowedAssetIds.size === 0) {
-      results.error = BulkIdErrorReason.NO_PERMISSION;
-      return results;
-    }
-
     // An asset can only ever belong to one locked album at a time -- so a single add-to-albums
     // call can target any number of unlocked albums together, or exactly one locked album alone,
     // but never 2+ locked albums or a locked+unlocked mix. Mirrors the client-side check in the
@@ -265,13 +289,30 @@ export class AlbumService extends BaseService {
       throw new BadRequestException('Assets can only be added to one locked album at a time');
     }
 
-    // A locked album can only ever contain assets that are already locked (already sitting in the
-    // locked folder) -- reject outright rather than converting/evicting them.
-    if (lockedTargetAlbumIds.size === 1) {
-      const lockedAssetIds = await this.assetRepository.getLockedAssetIds([...allowedAssetIds]);
-      if (lockedAssetIds.size !== allowedAssetIds.size) {
+    const isLockedTarget = lockedTargetAlbumIds.size === 1;
+    let allowedAssetIds: Set<string>;
+
+    if (isLockedTarget) {
+      // A locked album can only ever contain assets that are already locked (already sitting in
+      // the locked folder) -- reject outright rather than converting/evicting them.
+      const lockedAssetIds = await this.assetRepository.getLockedAssetIds(dto.assetIds);
+      if (lockedAssetIds.size !== dto.assetIds.length) {
         throw new BadRequestException('A locked album can only contain assets that are already locked');
       }
+
+      // Permission.AssetShare (used below for the unlocked-album path) hardcodes non-elevated
+      // access, since it also covers shared-link/album-sharing paths that must never expose locked
+      // content -- so it would reject every one of these assets outright. AssetUpdate respects
+      // elevation, and organizing an asset the requester already owns into a locked album they
+      // also own doesn't expose it to anyone else.
+      allowedAssetIds = await this.checkAccess({ auth, permission: Permission.AssetUpdate, ids: dto.assetIds });
+    } else {
+      allowedAssetIds = await this.checkAccess({ auth, permission: Permission.AssetShare, ids: dto.assetIds });
+    }
+
+    if (allowedAssetIds.size === 0) {
+      results.error = BulkIdErrorReason.NO_PERMISSION;
+      return results;
     }
 
     const albumAssetValues: { albumId: string; assetId: string }[] = [];
